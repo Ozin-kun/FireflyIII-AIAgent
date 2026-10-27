@@ -13,23 +13,64 @@ import {
   ChevronRight,
   RefreshCw,
   Plus,
-  ShieldCheck,
   CheckCircle2,
   AlertCircle,
   Menu,
   X,
   CreditCard,
   Target,
-  Database,
   Copy,
-  Check
+  Check,
+  MessageSquare,
+  Trash2
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import './App.css';
 
 export default function App() {
-  const [messages, setMessages] = useState([]);
+  // ── Conversation Sessions (Multi-Thread History) ─────────────
+  const [sessions, setSessions] = useState(() => {
+    try {
+      const saved = localStorage.getItem('firefly_chat_sessions');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
+    } catch (e) {
+      console.warn('Could not read sessions from localStorage:', e);
+    }
+    return [];
+  });
+
+  const [activeSessionId, setActiveSessionId] = useState(() => {
+    try {
+      const saved = localStorage.getItem('firefly_chat_sessions');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed[0].id;
+        }
+      }
+    } catch (e) {}
+    return 'session_' + Date.now();
+  });
+
+  const [messages, setMessages] = useState(() => {
+    try {
+      const saved = localStorage.getItem('firefly_chat_sessions');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed[0].messages || [];
+        }
+      }
+    } catch (e) {}
+    return [];
+  });
+
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [user, setUser] = useState({ email: '', role: '', id: null });
@@ -155,6 +196,51 @@ export default function App() {
     }
   };
 
+  // ── Session Switch / Creation / Deletion Handlers ─────────
+  const handleNewChat = () => {
+    if (loading) return;
+    if (messages.length === 0) return; // already in an empty new session
+
+    const freshId = 'session_' + Date.now();
+    setActiveSessionId(freshId);
+    setMessages([]);
+    setInput('');
+    setSidebarOpen(false);
+  };
+
+  const handleSelectSession = (sessionId) => {
+    if (loading || sessionId === activeSessionId) return;
+    const target = sessions.find((s) => s.id === sessionId);
+    if (target) {
+      setActiveSessionId(target.id);
+      setMessages(target.messages || []);
+      setInput('');
+      setSidebarOpen(false);
+    }
+  };
+
+  const handleDeleteSession = (sessionId, e) => {
+    e.stopPropagation();
+    if (loading) return;
+
+    const remaining = sessions.filter((s) => s.id !== sessionId);
+    setSessions(remaining);
+    try {
+      localStorage.setItem('firefly_chat_sessions', JSON.stringify(remaining));
+    } catch (err) {}
+
+    if (sessionId === activeSessionId) {
+      if (remaining.length > 0) {
+        setActiveSessionId(remaining[0].id);
+        setMessages(remaining[0].messages || []);
+      } else {
+        const freshId = 'session_' + Date.now();
+        setActiveSessionId(freshId);
+        setMessages([]);
+      }
+    }
+  };
+
   const handleSend = async (customText = null) => {
     const textToSend = customText || input;
     if (!textToSend.trim() || loading) return;
@@ -162,6 +248,11 @@ export default function App() {
     if (isListening) {
       recognitionRef.current?.stop();
     }
+
+    const currentSessionId = activeSessionId;
+    const historyPayload = messages
+      .filter((m) => m.content && !m.isStreaming)
+      .map((m) => ({ role: m.role, content: m.content }));
 
     const userMessage = {
       id: Date.now().toString(),
@@ -183,7 +274,8 @@ export default function App() {
       isStreaming: true,
     };
 
-    setMessages((prev) => [...prev, userMessage, initialAssistantMessage]);
+    const nextMessages = [...messages, userMessage, initialAssistantMessage];
+    setMessages(nextMessages);
     setInput('');
     setLoading(true);
 
@@ -191,7 +283,11 @@ export default function App() {
       const response = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: textToSend }),
+        body: JSON.stringify({
+          message: textToSend,
+          thread_id: currentSessionId,
+          history: historyPayload,
+        }),
       });
 
       if (!response.ok) {
@@ -301,23 +397,57 @@ export default function App() {
               )
             );
           }
-        } catch (e) {
-          // ignore
-        }
+        } catch (e) {}
       }
 
-      // Ensure streaming state is finalized
-      setMessages((prev) =>
-        prev.map((m) =>
+      // Finalize and sync session to localStorage
+      setMessages((prev) => {
+        const finalized = prev.map((m) =>
           m.id === assistantId
             ? { ...m, isStreaming: false, content: m.content || 'Tugas selesai dieksekusi.' }
             : m
-        )
-      );
+        );
+
+        setSessions((prevSessions) => {
+          let found = false;
+          let sessionTitle = textToSend.length > 28 ? textToSend.slice(0, 28) + '...' : textToSend;
+
+          const updated = prevSessions.map((s) => {
+            if (s.id === currentSessionId) {
+              found = true;
+              return {
+                ...s,
+                title: s.title && s.title !== 'Percakapan Baru' ? s.title : sessionTitle,
+                messages: finalized,
+                updatedAt: Date.now(),
+              };
+            }
+            return s;
+          });
+
+          if (!found) {
+            updated.unshift({
+              id: currentSessionId,
+              title: sessionTitle,
+              createdAt: new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }),
+              updatedAt: Date.now(),
+              messages: finalized,
+            });
+          }
+
+          updated.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+          try {
+            localStorage.setItem('firefly_chat_sessions', JSON.stringify(updated));
+          } catch (e) {}
+          return updated;
+        });
+
+        return finalized;
+      });
     } catch (err) {
       console.error('Chat stream error:', err);
-      setMessages((prev) =>
-        prev.map((m) =>
+      setMessages((prev) => {
+        const finalized = prev.map((m) =>
           m.id === assistantId
             ? {
                 ...m,
@@ -327,8 +457,20 @@ export default function App() {
                   : `Terjadi kendala saat menghubungi server: ${err.message}`,
               }
             : m
-        )
-      );
+        );
+
+        setSessions((prevSessions) => {
+          const updated = prevSessions.map((s) =>
+            s.id === currentSessionId ? { ...s, messages: finalized, updatedAt: Date.now() } : s
+          );
+          try {
+            localStorage.setItem('firefly_chat_sessions', JSON.stringify(updated));
+          } catch (e) {}
+          return updated;
+        });
+
+        return finalized;
+      });
     } finally {
       setLoading(false);
     }
@@ -352,7 +494,7 @@ export default function App() {
             </div>
             <div className="brand-text">
               <h1>Firefly AI</h1>
-              <span className="brand-badge">Level 2 Agent</span>
+              <span className="brand-badge">Agent</span>
             </div>
           </div>
           <button className="mobile-toggle-btn" onClick={() => setSidebarOpen(false)}>
@@ -360,31 +502,47 @@ export default function App() {
           </button>
         </div>
 
-        <button className="new-chat-btn" onClick={() => setMessages([])}>
+        <button className="new-chat-btn" onClick={handleNewChat} title="Mulai sesi percakapan baru">
           <Plus size={16} />
-          New Conversation
+          Percakapan Baru
         </button>
 
         <div className="sidebar-scroll">
-          {/* Active Firefly III Session Card */}
-          <div className="sidebar-session-card">
+          {/* Riwayat Percakapan (Conversation History) */}
+          <div>
             <div className="sidebar-section-title">
-              <ShieldCheck size={13} />
-              Sesi Firefly III
+              <MessageSquare size={13} />
+              Riwayat Percakapan ({sessions.length})
             </div>
-            <div className="session-status-box">
-              <div className="connection-pill">
-                <span className="status-dot"></span>
-                Firefly III Terhubung
-              </div>
-              <div className="session-user-hint">
-                User: <strong>{user.email || 'Memuat akun...'}</strong>
-              </div>
+            <div className="session-history-list">
+              {sessions.length === 0 ? (
+                <div className="session-empty-hint">Belum ada percakapan tersimpan</div>
+              ) : (
+                sessions.map((s) => (
+                  <div
+                    key={s.id}
+                    className={`session-item ${s.id === activeSessionId ? 'active' : ''}`}
+                    onClick={() => handleSelectSession(s.id)}
+                    title={s.title}
+                  >
+                    <MessageSquare size={14} className="session-item-icon" />
+                    <span className="session-item-title">{s.title || 'Percakapan'}</span>
+                    <button
+                      type="button"
+                      className="session-delete-btn"
+                      onClick={(e) => handleDeleteSession(s.id, e)}
+                      title="Hapus riwayat percakapan ini"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                ))
+              )}
             </div>
           </div>
 
           {/* Quick AI Capabilities Shortcuts (Without leaking balances) */}
-          <div>
+          <div style={{ marginTop: '14px' }}>
             <div className="sidebar-section-title">
               <Sparkles size={13} />
               Kapabilitas AI Agent
@@ -407,22 +565,6 @@ export default function App() {
                 <span>Tagihan & Langganan</span>
               </div>
             </div>
-          </div>
-
-          {/* Memory Inspector Button */}
-          <div>
-            <div className="sidebar-section-title">
-              <Database size={13} />
-              Agentic Memory
-            </div>
-            <button
-              className="chip-btn"
-              style={{ width: '100%', justifyContent: 'center' }}
-              onClick={fetchMemory}
-            >
-              <Brain size={14} />
-              View Learned Preferences
-            </button>
           </div>
         </div>
 
@@ -461,7 +603,14 @@ export default function App() {
             <button className="mobile-toggle-btn" onClick={() => setSidebarOpen(true)}>
               <Menu size={22} />
             </button>
-            <h2>Autonomous Finance Assistant</h2>
+            <div>
+              <h2 style={{ margin: 0, fontSize: '1.05rem' }}>
+                {sessions.find((s) => s.id === activeSessionId)?.title || 'Percakapan Baru'}
+              </h2>
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                {messages.length > 0 ? `${messages.length} pesan dalam sesi ini` : 'Sesi percakapan baru'}
+              </span>
+            </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
@@ -479,8 +628,8 @@ export default function App() {
               </div>
               <h3>Halo, {user.email ? user.email.split('@')[0] : 'Pengguna'}! 👋</h3>
               <p>
-                Saya adalah AI Agent Level 2 Firefly III Anda. Saya dapat memeriksa saldo, menganalisis budget, 
-                mencari transaksi historis lewat Dynamic RAG, dan mencatat pengeluaran Anda.
+                Saya adalah AI Agent Firefly III Anda. Saya dapat memeriksa saldo, menganalisis budget, 
+                mencari transaksi historis, dan mencatat pengeluaran Anda.
               </p>
 
               <div className="suggestion-chips">
@@ -536,7 +685,6 @@ export default function App() {
 
                   <div className="message-footer-info">
                     <span>{msg.timestamp}</span>
-                    {msg.isStreaming && <span className="streaming-badge">Live</span>}
                   </div>
                 </div>
               </div>

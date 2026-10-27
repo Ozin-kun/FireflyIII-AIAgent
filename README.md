@@ -35,7 +35,7 @@
 ```mermaid
 flowchart LR
     subgraph Client["💻 Pengguna"]
-        WebUI["Web Interface (React 19 + Vite)\n• Live Typewriter Streaming (▊)\n• Audio-to-Text Speech Input\n• Dynamic User Profile"]
+        WebUI["Web Interface (React 19 + Vite)\n• Multi-Session Conversation History\n• Live Typewriter Streaming (▊)\n• Audio-to-Text Speech Input\n• Dynamic User Profile"]
     end
 
     subgraph Backend["🤖 AI Agent (FastAPI / LangGraph)"]

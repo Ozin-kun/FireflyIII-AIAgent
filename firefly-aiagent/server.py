@@ -24,7 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessage
 
 # Filter fixed sampling warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="langchain_google_genai")
@@ -96,6 +96,7 @@ agent_app = create_agent_graph(
 class ChatRequest(BaseModel):
     message: str
     thread_id: Optional[str] = "web_session_main"
+    history: Optional[list[dict[str, Any]]] = None
 
 
 class FactRequest(BaseModel):
@@ -278,10 +279,33 @@ def chat_stream(req: ChatRequest):
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
     harness.reset()
-    thread_config = {"configurable": {"thread_id": req.thread_id or "web_session_main"}}
+    target_thread_id = req.thread_id.strip() if req.thread_id and req.thread_id.strip() else "web_session_main"
+    thread_config = {"configurable": {"thread_id": target_thread_id}}
+
+    # Check if thread already has checkpointed messages in LangGraph
+    existing_state = None
+    try:
+        existing_state = agent_app.get_state(thread_config)
+    except Exception as state_err:
+        logger.debug("Could not read thread state: %s", state_err)
+
+    messages_to_send = []
+    # If thread is brand new in memory, but frontend provided history, reconstruct context
+    if (not existing_state or not existing_state.values or not existing_state.values.get("messages")) and req.history:
+        for item in req.history:
+            role = item.get("role")
+            content = item.get("content", "")
+            if not content:
+                continue
+            if role == "user":
+                messages_to_send.append(HumanMessage(content=content))
+            elif role == "assistant":
+                messages_to_send.append(AIMessage(content=content))
+
+    messages_to_send.append(HumanMessage(content=user_msg))
 
     initial_state = {
-        "messages": [HumanMessage(content=user_msg)],
+        "messages": messages_to_send,
         "plan": [],
         "is_complex": False,
         "reflection": "",
@@ -408,10 +432,31 @@ def chat(req: ChatRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
     harness.reset()
-    thread_config = {"configurable": {"thread_id": req.thread_id or "web_session_main"}}
+    target_thread_id = req.thread_id.strip() if req.thread_id and req.thread_id.strip() else "web_session_main"
+    thread_config = {"configurable": {"thread_id": target_thread_id}}
+
+    existing_state = None
+    try:
+        existing_state = agent_app.get_state(thread_config)
+    except Exception as state_err:
+        logger.debug("Could not read thread state: %s", state_err)
+
+    messages_to_send = []
+    if (not existing_state or not existing_state.values or not existing_state.values.get("messages")) and req.history:
+        for item in req.history:
+            role = item.get("role")
+            content = item.get("content", "")
+            if not content:
+                continue
+            if role == "user":
+                messages_to_send.append(HumanMessage(content=content))
+            elif role == "assistant":
+                messages_to_send.append(AIMessage(content=content))
+
+    messages_to_send.append(HumanMessage(content=user_msg))
 
     initial_state = {
-        "messages": [HumanMessage(content=user_msg)],
+        "messages": messages_to_send,
         "plan": [],
         "is_complex": False,
         "reflection": "",
