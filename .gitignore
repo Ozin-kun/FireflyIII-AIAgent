@@ -1,0 +1,32 @@
+# ── Environment & Secrets (SANGAT PENTING: JANGAN DI-UPLOAD) ──
+.env
+.db.env
+*.env
+!.env.example
+*.token
+*.key
+
+# ── Python Virtual Environments & Node Modules ───────────────
+.venv/
+venv/
+ENV/
+env/
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# ── Python Cache & Bytecode ──────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+
+# ── Local Agent Data (SQLite memory & ChromaDB vector store) ─
+firefly-aiagent/data/
+data/
+
+# ── OS & IDE Files ───────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
