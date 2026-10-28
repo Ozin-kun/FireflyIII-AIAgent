@@ -162,11 +162,11 @@ def create_finance_tools(client: FireflyClient) -> list[BaseTool]:
         """Create a new financial transaction in Firefly III.
         
         Args:
-            description: Description of the expense or income (e.g. 'Coffee at Starbucks').
+            description: Description of the expense or income (e.g. 'Coffee at Starbucks', 'Makan Siang').
             amount: Positive numeric amount (e.g. 45000.0).
             type: Transaction type: 'withdrawal' (expense), 'deposit' (income), or 'transfer'.
-            source_name: Name of source account (where money leaves).
-            destination_name: Name of destination account (where money goes).
+            source_name: Optional name of source account. If omitted for withdrawals, automatically resolves to primary asset account.
+            destination_name: Optional name of destination account. If omitted for withdrawals, defaults to description.
             category_name: Optional category name.
             budget_name: Optional budget name.
             date: Transaction date in YYYY-MM-DD format (defaults to today).
@@ -353,17 +353,24 @@ def create_finance_tools(client: FireflyClient) -> list[BaseTool]:
         name: str,
         target_amount: float,
         target_date: Optional[str] = None,
+        account_name: Optional[str] = None,
     ) -> str:
-        """Create a new piggy bank savings goal.
+        """Create a new piggy bank savings goal in Firefly III.
         
         Args:
             name: Goal title (e.g. 'Beli Laptop Baru', 'Dana Darurat 2026', 'Liburan Bali').
             target_amount: Total money needed (e.g. 15000000.0).
             target_date: Optional completion target date in YYYY-MM-DD format.
+            account_name: Optional asset account where savings are allocated (e.g. 'BCA', 'Dompet Tunai'). If omitted, primary asset account is automatically used.
         """
         try:
-            p = client.create_piggy_bank(name=name, target_amount=target_amount, target_date=target_date)
-            return f"✓ Piggy bank '{p.get('name')}' created with target Rp{target_amount:,.2f}."
+            p = client.create_piggy_bank(
+                name=name,
+                target_amount=target_amount,
+                account_name=account_name,
+                target_date=target_date,
+            )
+            return f"✓ Target tabungan (piggy bank) '{p.get('name')}' berhasil dibuat dengan target Rp{target_amount:,.2f}."
         except Exception as e:
             return f"Error creating piggy bank: {e}"
 
@@ -435,7 +442,7 @@ def create_finance_tools(client: FireflyClient) -> list[BaseTool]:
     def create_bill(
         name: str,
         amount_min: float,
-        amount_max: float,
+        amount_max: Optional[float] = None,
         due_date: Optional[str] = None,
         repeat_frequency: str = "monthly",
     ) -> str:
@@ -444,19 +451,20 @@ def create_finance_tools(client: FireflyClient) -> list[BaseTool]:
         Args:
             name: Bill title (e.g. 'WiFi Indihome Rumah', 'Listrik PLN').
             amount_min: Minimum expected amount (e.g. 350000.0).
-            amount_max: Maximum expected amount (e.g. 400000.0).
+            amount_max: Maximum expected amount. If omitted, defaults to amount_min.
             due_date: First expected due date (YYYY-MM-DD).
             repeat_frequency: Frequency ('weekly', 'monthly', 'quarterly', 'yearly').
         """
         try:
+            actual_max = amount_max if amount_max is not None else amount_min
             b = client.create_bill(
                 name=name,
                 amount_min=amount_min,
-                amount_max=amount_max,
+                amount_max=actual_max,
                 date=due_date,
                 repeat_freq=repeat_frequency,
             )
-            return f"✓ Bill '{b.get('name')}' created (Rp{amount_min:,.2f} - Rp{amount_max:,.2f}, {repeat_frequency})."
+            return f"✓ Bill '{b.get('name')}' created (Rp{amount_min:,.2f} - Rp{actual_max:,.2f}, {repeat_frequency})."
         except Exception as e:
             return f"Error creating bill: {e}"
 
@@ -541,9 +549,9 @@ def create_finance_tools(client: FireflyClient) -> list[BaseTool]:
 
     @tool
     def create_deposit(
-        destination_account: str,
         amount: float,
         description: str,
+        destination_account: Optional[str] = None,
         source_name: Optional[str] = None,
         category_name: Optional[str] = None,
         date: Optional[str] = None,
@@ -552,9 +560,9 @@ def create_finance_tools(client: FireflyClient) -> list[BaseTool]:
         """Record income or deposit into an asset account (e.g. salary, freelance, gift, cashback).
 
         Args:
-            destination_account: The asset account receiving the income (e.g. 'Rekening Utama BCA').
             amount: Positive numeric amount of income.
             description: Description of income (e.g. 'Gaji Bulanan Oktober', 'Hasil Proyek Web').
+            destination_account: Optional asset account receiving the income (e.g. 'Rekening BCA'). If omitted, primary asset account is automatically used.
             source_name: Name of revenue source (e.g. 'PT Maju Bersama', 'Klien Freelance').
             category_name: Optional category (e.g. 'Gaji & Pemasukan').
             date: Optional date in YYYY-MM-DD format.
@@ -570,9 +578,10 @@ def create_finance_tools(client: FireflyClient) -> list[BaseTool]:
                 date=date,
                 notes=notes,
             )
+            target_acc = tx.get("destination_name") or destination_account or "Kas / Rekening Utama"
             return (
                 f"✓ Deposit of Rp{amount:,.2f} recorded successfully!\n"
-                f"  Account: {destination_account}\n"
+                f"  Account: {target_acc}\n"
                 f"  Description: {tx.get('description')}\n"
                 f"  Source: {tx.get('source_name', 'N/A')}\n"
                 f"  ID: {tx.get('id')}"

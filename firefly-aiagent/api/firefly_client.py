@@ -144,6 +144,35 @@ class FireflyClient:
             "notes": attrs.get("notes", ""),
         }
 
+    def _resolve_asset_account(self, name_or_query: Optional[str] = None) -> Optional[dict]:
+        """Resolve an asset account by ID, exact name, or fuzzy substring match, defaulting to first asset account."""
+        try:
+            accounts = self.get_accounts(account_type="asset")
+            if not accounts:
+                return None
+            if not name_or_query:
+                return accounts[0]
+
+            q = str(name_or_query).strip().lower()
+            # 1. Match by numeric ID
+            for acc in accounts:
+                if str(acc.get("id")) == q:
+                    return acc
+            # 2. Match by exact name (case-insensitive)
+            for acc in accounts:
+                if acc.get("name", "").strip().lower() == q:
+                    return acc
+            # 3. Match by substring
+            for acc in accounts:
+                acc_name = acc.get("name", "").strip().lower()
+                if q in acc_name or acc_name in q:
+                    return acc
+            # 4. Fallback to first available asset account
+            return accounts[0]
+        except Exception as e:
+            logger.warning("Could not auto-resolve asset account for '%s': %s", name_or_query, e)
+            return None
+
     def create_account(
         self,
         name: str,
@@ -151,15 +180,38 @@ class FireflyClient:
         currency_code: str = "IDR",
         opening_balance: float = 0.0,
         notes: str = "",
+        liability_type: str = "debt",
+        liability_direction: str = "credit",
     ) -> dict:
-        """Create a new financial account (e.g. Bank Account, Cash Wallet, Credit Card)."""
-        payload = {
+        """Create a new financial account (e.g. Bank Account, Cash Wallet, Credit Card).
+        
+        Compliant with Firefly III v6.2+ requirements:
+        - Requires `account_role: defaultAsset` for asset accounts.
+        - Requires `opening_balance_date` if `opening_balance` is specified.
+        - Requires `liability_type` & `liability_direction` for liability accounts.
+        """
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        payload: dict[str, Any] = {
             "name": name,
             "type": account_type,
             "currency_code": currency_code,
-            "opening_balance": str(opening_balance),
             "notes": notes,
         }
+        if account_type == "asset":
+            payload["account_role"] = "defaultAsset"
+            if opening_balance is not None and float(opening_balance) != 0.0:
+                payload["opening_balance"] = str(opening_balance)
+                payload["opening_balance_date"] = today_str
+        elif account_type in ("liability", "liabilities"):
+            payload["liability_type"] = liability_type
+            payload["liability_direction"] = liability_direction
+            if opening_balance is not None and float(opening_balance) != 0.0:
+                payload["opening_balance"] = str(opening_balance)
+                payload["opening_balance_date"] = today_str
+        elif opening_balance is not None and float(opening_balance) != 0.0:
+            payload["opening_balance"] = str(opening_balance)
+            payload["opening_balance_date"] = today_str
+
         res = self._request("POST", "accounts", json_data=payload)
         data = res.get("data", {})
         attrs = data.get("attributes", {})
@@ -204,15 +256,40 @@ class FireflyClient:
         notes: Optional[str] = None,
         piggy_bank_id: Optional[int] = None,
     ) -> dict:
-        """Create a new transaction in Firefly III."""
+        """Create a new transaction in Firefly III with intelligent account resolution."""
+        resolved_source = source_name
+        resolved_destination = destination_name
+
+        if type == "withdrawal":
+            # Source must be a valid asset account; auto-resolve if missing or fuzzy
+            acc = self._resolve_asset_account(source_name)
+            resolved_source = acc["name"] if acc else (source_name or "Kas")
+            # Destination is the expense recipient/merchant; default to description
+            if not resolved_destination:
+                resolved_destination = description or "Pengeluaran Umum"
+        elif type == "deposit":
+            # Destination must be a valid asset account; auto-resolve if missing or fuzzy
+            acc = self._resolve_asset_account(destination_name)
+            resolved_destination = acc["name"] if acc else (destination_name or "Kas")
+            # Source is the revenue source
+            if not resolved_source:
+                resolved_source = "Sumber Pendapatan"
+        elif type == "transfer":
+            src_acc = self._resolve_asset_account(source_name)
+            if src_acc:
+                resolved_source = src_acc["name"]
+            dst_acc = self._resolve_asset_account(destination_name)
+            if dst_acc:
+                resolved_destination = dst_acc["name"]
+
         tx_date = date or datetime.now().strftime("%Y-%m-%d")
         split: dict[str, Any] = {
             "type": type,
             "description": description,
             "amount": str(amount),
             "date": tx_date,
-            "source_name": source_name,
-            "destination_name": destination_name,
+            "source_name": resolved_source,
+            "destination_name": resolved_destination,
             "category_name": category_name,
             "budget_name": budget_name,
             "notes": notes or "",
@@ -357,17 +434,47 @@ class FireflyClient:
         name: str,
         target_amount: float,
         account_id: Optional[int] = None,
+        account_name: Optional[str] = None,
         target_date: Optional[str] = None,
         start_date: Optional[str] = None,
+        currency_code: Optional[str] = None,
     ) -> dict:
-        """Create a new piggy bank savings goal."""
+        """Create a new piggy bank savings goal in Firefly III."""
+        target_acc_id = account_id
+        target_currency = currency_code
+
+        # If account_id or currency_code is missing, automatically resolve from asset accounts
+        if not target_acc_id or not target_currency:
+            try:
+                accounts = self.get_accounts()
+                asset_accounts = [a for a in accounts if a.get("type") == "asset"]
+                chosen = None
+                if account_name:
+                    chosen = next((a for a in asset_accounts if account_name.lower() in a.get("name", "").lower()), None)
+                if not chosen and target_acc_id:
+                    chosen = next((a for a in asset_accounts if str(a.get("id")) == str(target_acc_id)), None)
+                if not chosen and asset_accounts:
+                    chosen = asset_accounts[0]
+
+                if chosen:
+                    target_acc_id = int(chosen["id"])
+                    if not target_currency:
+                        target_currency = chosen.get("currency_code", "IDR")
+            except Exception as e:
+                logger.warning("Could not auto-resolve account for piggy bank: %s", e)
+
+        if not target_acc_id:
+            target_acc_id = 1
+        if not target_currency:
+            target_currency = "IDR"
+
         payload: dict[str, Any] = {
             "name": name,
             "target_amount": str(target_amount),
             "start_date": start_date or datetime.now().strftime("%Y-%m-%d"),
+            "transaction_currency_code": target_currency,
+            "accounts": [{"account_id": int(target_acc_id)}],
         }
-        if account_id:
-            payload["account_id"] = str(account_id)
         if target_date:
             payload["target_date"] = target_date
 
@@ -382,16 +489,55 @@ class FireflyClient:
             "left_to_save": attrs.get("left_to_save", str(target_amount)),
         }
 
-    def update_piggy_bank_amount(self, piggy_bank_id: int, new_current_amount: float) -> dict:
-        """Directly adjust a piggy bank current saved amount."""
-        payload = {"current_amount": str(new_current_amount)}
-        res = self._request("PUT", f"piggy-banks/{piggy_bank_id}", json_data=payload)
+    def get_piggy_bank(self, piggy_bank_id: int) -> dict:
+        """Fetch a specific piggy bank by numeric ID."""
+        res = self._request("GET", f"piggy-banks/{piggy_bank_id}")
         data = res.get("data", {})
         attrs = data.get("attributes", {})
         return {
             "id": data.get("id"),
             "name": attrs.get("name", ""),
-            "current_amount": attrs.get("current_amount", str(new_current_amount)),
+            "target_amount": attrs.get("target_amount", "0"),
+            "current_amount": attrs.get("current_amount", "0"),
+            "left_to_save": attrs.get("left_to_save", "0"),
+            "percentage": attrs.get("percentage", 0),
+            "target_date": attrs.get("target_date", ""),
+            "accounts": attrs.get("accounts", []),
+        }
+
+    def update_piggy_bank_amount(
+        self,
+        piggy_bank_id: int,
+        new_current_amount: float,
+        account_id: Optional[int] = None,
+    ) -> dict:
+        """Directly adjust a piggy bank current saved amount using the Firefly III v6.2+ accounts pivot schema."""
+        pb = self.get_piggy_bank(piggy_bank_id)
+        pb_name = pb.get("name", "Savings Goal")
+        target_acc_id = account_id
+
+        if not target_acc_id:
+            accounts = pb.get("accounts", [])
+            if accounts:
+                target_acc_id = int(accounts[0].get("account_id"))
+            else:
+                primary = self._resolve_asset_account()
+                target_acc_id = int(primary["id"]) if primary else 1
+
+        payload = {
+            "name": pb_name,
+            "accounts": [{
+                "account_id": target_acc_id,
+                "current_amount": f"{new_current_amount:.2f}",
+            }],
+        }
+        res = self._request("PUT", f"piggy-banks/{piggy_bank_id}", json_data=payload)
+        data = res.get("data", {})
+        attrs = data.get("attributes", {})
+        return {
+            "id": data.get("id"),
+            "name": attrs.get("name", pb_name),
+            "current_amount": attrs.get("current_amount", f"{new_current_amount:.2f}"),
             "left_to_save": attrs.get("left_to_save", "0"),
             "percentage": attrs.get("percentage", 0),
         }
@@ -419,15 +565,16 @@ class FireflyClient:
         self,
         name: str,
         amount_min: float,
-        amount_max: float,
+        amount_max: Optional[float] = None,
         date: Optional[str] = None,
         repeat_freq: str = "monthly",
     ) -> dict:
         """Create a recurring bill reminder."""
+        actual_max = amount_max if amount_max is not None else amount_min
         payload = {
             "name": name,
             "amount_min": str(amount_min),
-            "amount_max": str(amount_max),
+            "amount_max": str(actual_max),
             "date": date or datetime.now().strftime("%Y-%m-%d"),
             "repeat_freq": repeat_freq,
             "active": True,
@@ -439,7 +586,7 @@ class FireflyClient:
             "id": data.get("id"),
             "name": attrs.get("name", name),
             "amount_min": attrs.get("amount_min", str(amount_min)),
-            "amount_max": attrs.get("amount_max", str(amount_max)),
+            "amount_max": attrs.get("amount_max", str(actual_max)),
             "repeat_freq": attrs.get("repeat_freq", repeat_freq),
         }
 
@@ -544,21 +691,26 @@ class FireflyClient:
 
     def create_deposit(
         self,
-        destination_name: str,
-        amount: float,
-        description: str,
+        destination_name: Optional[str] = None,
+        amount: float = 0.0,
+        description: str = "",
         source_name: Optional[str] = None,
         category_name: Optional[str] = None,
         date: Optional[str] = None,
         notes: Optional[str] = None,
     ) -> dict:
         """Create a deposit (income) into an asset account."""
+        dest = destination_name
+        if not dest:
+            primary = self._resolve_asset_account()
+            dest = primary["name"] if primary else "Kas"
+
         return self.create_transaction(
             description=description,
             amount=amount,
             type="deposit",
             source_name=source_name or "Gaji / Pendapatan",
-            destination_name=destination_name,
+            destination_name=dest,
             category_name=category_name or "Gaji & Pemasukan",
             date=date,
             notes=notes,
