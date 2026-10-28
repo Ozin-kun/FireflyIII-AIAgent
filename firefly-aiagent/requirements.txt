@@ -3,10 +3,8 @@ langchain>=0.3.0
 langchain-core>=0.3.0
 langgraph>=0.2.0
 langchain-google-genai>=2.0.0
-langchain-chroma>=0.1.4
 
-# ── Vector DB & Data Models ──────────────────────────────────
-chromadb>=0.5.0
+# ── Data Models ──────────────────────────────────────────────
 pydantic>=2.7.0
 
 # ── API & Environment ────────────────────────────────────────

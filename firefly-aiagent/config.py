@@ -33,10 +33,6 @@ class Config:
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     LLM_MODEL: str = os.getenv("LLM_MODEL", "gemini-2.0-flash")
 
-    # Dynamic RAG Vector Store Settings
-    CHROMA_PERSIST_DIR: str = str(DATA_DIR / "chroma")
-    RAG_COLLECTION_NAME: str = "firefly_transactions"
-
     # Agentic Memory Database Path
     MEMORY_DB_PATH: str = str(DATA_DIR / "memory.db")
 

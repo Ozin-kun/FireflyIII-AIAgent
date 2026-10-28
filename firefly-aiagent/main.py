@@ -3,7 +3,6 @@ Main CLI Interface for Firefly III AI Agent Level 2.
 
 Integrates all components:
 - Loop Engineering (LangGraph StateGraph: Planning, ReAct, Reflection)
-- Dynamic RAG (ChromaDB Vector Store with Delta Indexing)
 - Agentic Memory (SQLite Long-Term Facts + Checkpointer)
 - Agent Harness (Lifecycle Hooks & Circuit Breaker)
 - Firefly III Full Toolkit (Accounts, Transactions, Budgets, Piggy Banks, Bills, Categories)
@@ -24,7 +23,6 @@ warnings.filterwarnings("ignore", category=UserWarning, module="langchain_google
 from config import config, DATA_DIR
 from api.firefly_client import FireflyClient
 from tools.finance_tools import create_finance_tools
-from rag.engine import DynamicRAGEngine
 from memory.manager import MemoryManager
 from agent.harness import AgentHarnessCallback
 from agent.loops import create_agent_graph
@@ -35,7 +33,6 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[logging.FileHandler(DATA_DIR / "agent.log", encoding="utf-8")],
 )
-logging.getLogger("chromadb").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
@@ -47,9 +44,8 @@ def display_banner() -> None:
     console.print(
         Panel.fit(
             "[bold cyan]🤖 Firefly III AI Agent (Level 2)[/bold cyan]\n"
-            "[dim]Powered by LangChain & LangGraph | Google Gemini | ChromaDB Vector Store[/dim]\n\n"
-            "✨ [bold green]Dynamic RAG[/] | [bold purple]Agentic Memory[/] | "
-            "[bold yellow]Agent Harness[/] | [bold blue]Loop Engineering[/]\n\n"
+            "[dim]Powered by LangChain & LangGraph | Google Gemini | Firefly III Real-Time REST API[/dim]\n\n"
+            "✨ [bold purple]Agentic Memory[/] | [bold yellow]Agent Harness[/] | [bold blue]Loop Engineering[/]\n\n"
             "Type [bold yellow]/help[/] for command list, or ask anything about your finances.",
             title="Firefly III Autonomous Assistant",
             border_style="cyan",
@@ -68,8 +64,7 @@ def display_help() -> None:
     table.add_row("/budgets", "Quick inspect all budgets, limits & spending")
     table.add_row("/piggy", "Quick inspect all savings goals (piggy banks)")
     table.add_row("/bills", "Quick inspect recurring bills & subscriptions")
-    table.add_row("/rag", "Display RAG index statistics")
-    table.add_row("/sync", "Trigger dynamic delta sync with Firefly III")
+
     table.add_row("/memory", "Display Long-Term Facts and Episodic Reflections")
     table.add_row("/rule <key> <val>", "Teach agent a persistent rule/preference manually")
     table.add_row("/exit or /quit", "Exit the assistant")
@@ -133,29 +128,15 @@ def main() -> None:
     except Exception as e:
         console.print(f"[yellow]⚠️ Could not fetch user profile: {e}[/]")
 
-    console.print("[dim]Initializing RAG, Memory, and Tools...[/dim]")
-    # 1. RAG Engine
-    rag_engine = DynamicRAGEngine(
-        persist_directory=config.CHROMA_PERSIST_DIR,
-        collection_name=config.RAG_COLLECTION_NAME,
-        gemini_api_key=config.GEMINI_API_KEY,
-        firefly_client=client,
-    )
-    try:
-        new_indexed = rag_engine.sync_with_firefly()
-        console.print(f"[green]✓ Dynamic RAG: Synced {new_indexed} transactions into ChromaDB.[/]")
-    except Exception as e:
-        console.print(f"[yellow]⚠️ Initial RAG sync notice: {e}[/]")
-
-    # 2. Memory Manager
+    console.print("[dim]Initializing Memory and Tools...[/dim]")
+    # 1. Memory Manager
     memory_manager = MemoryManager(db_path=config.MEMORY_DB_PATH)
     console.print("[green]✓ Agentic Memory: SQLite Long-Term store & Checkpointer ready.[/]")
 
-    # 3. Tools
+    # 2. Tools (Direct Firefly III Real-Time REST API)
     finance_tools = create_finance_tools(client)
-    retriever_tool = rag_engine.get_retriever_tool()
-    all_tools = finance_tools + [retriever_tool]
-    console.print(f"[green]✓ Tools: Loaded {len(all_tools)} tools (including user profile & semantic RAG).[/]")
+    all_tools = finance_tools
+    console.print(f"[green]✓ Tools: Loaded {len(all_tools)} tools (Firefly III Real-Time Finance API).[/]")
 
     # 4. Agent Harness
     harness = AgentHarnessCallback(max_tool_retries=3)
@@ -271,16 +252,7 @@ def main() -> None:
                             b.get("next_expected_match", "N/A"),
                         )
                     console.print(table)
-                elif cmd == "/rag":
-                    stats = rag_engine.get_stats()
-                    table = Table(title="Dynamic RAG Statistics", border_style="cyan")
-                    for k, v in stats.items():
-                        table.add_row(k, str(v))
-                    console.print(table)
-                elif cmd == "/sync":
-                    console.print("[dim]Syncing latest transactions with Firefly III...[/dim]")
-                    added = rag_engine.sync_with_firefly()
-                    console.print(f"[bold green]✓ Synced {added} new transaction(s).[/]")
+
                 elif cmd == "/memory":
                     stats = memory_manager.get_stats()
                     console.print(f"[bold purple]🧠 Memory Stats:[/] {stats}")
@@ -344,13 +316,6 @@ def main() -> None:
 
             console.print("\n[bold cyan]🤖 Assistant:[/]")
             console.print(Markdown(final_content or "Action completed."))
-
-            # Auto trigger dynamic RAG delta update if transactions were created
-            for action in harness.action_history:
-                if "transaction" in action.get("tool", ""):
-                    rag_engine.sync_with_firefly()
-                    break
-
             console.print()
 
         except KeyboardInterrupt:

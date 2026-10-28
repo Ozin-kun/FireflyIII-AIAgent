@@ -9,11 +9,9 @@ Exposes REST APIs for the React Frontend:
 - GET /api/piggy: Savings goals & progress
 - GET /api/bills: Recurring obligations
 - GET /api/memory: Agentic Long-term facts & reflection episodes
-- POST /api/sync: Trigger Dynamic RAG incremental delta sync
 """
 
 import logging
-import os
 import warnings
 from pathlib import Path
 from typing import Any, Optional
@@ -32,7 +30,6 @@ warnings.filterwarnings("ignore", category=UserWarning, module="langchain_google
 from config import config, DATA_DIR
 from api.firefly_client import FireflyClient
 from tools.finance_tools import create_finance_tools
-from rag.engine import DynamicRAGEngine
 from memory.manager import MemoryManager
 from agent.harness import AgentHarnessCallback
 from agent.loops import create_agent_graph
@@ -61,18 +58,9 @@ client = FireflyClient(config.FIREFLY_BASE_URL, config.FIREFLY_API_TOKEN)
 memory_manager = MemoryManager(db_path=config.MEMORY_DB_PATH)
 harness = AgentHarnessCallback(max_tool_retries=3)
 
-# RAG Engine
-rag_engine = DynamicRAGEngine(
-    persist_directory=config.CHROMA_PERSIST_DIR,
-    collection_name=config.RAG_COLLECTION_NAME,
-    gemini_api_key=config.GEMINI_API_KEY,
-    firefly_client=client,
-)
-
-# Tools
+# Tools (Direct Firefly III Real-Time REST API)
 finance_tools = create_finance_tools(client)
-retriever_tool = rag_engine.get_retriever_tool()
-all_tools = finance_tools + [retriever_tool]
+all_tools = finance_tools
 
 # Authenticated user info cache
 cached_user: dict[str, Any] = {}
@@ -219,15 +207,6 @@ def add_fact(req: FactRequest) -> dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
-@app.post("/api/sync")
-def sync_rag() -> dict[str, Any]:
-    """Trigger manual incremental delta sync with Firefly III."""
-    try:
-        count = rag_engine.sync_with_firefly()
-        stats = rag_engine.get_stats()
-        return {"success": True, "new_indexed": count, "stats": stats}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
 
 
 def extract_clean_ai_reply(content: Any) -> str:
@@ -383,15 +362,6 @@ def chat_stream(req: ChatRequest):
                 yield f"data: {json.dumps({'type': 'action', 'action': act}, ensure_ascii=False)}\n\n"
                 emitted_actions += 1
 
-            # Delta sync if any transaction was mutated
-            mutation_tools = {"create_transaction", "create_transfer", "create_deposit", "delete_transaction"}
-            for act in current_actions:
-                if act.get("tool", "") in mutation_tools:
-                    try:
-                        rag_engine.sync_with_firefly()
-                    except Exception as sync_err:
-                        logger.warning("Auto sync error: %s", sync_err)
-                    break
 
             # Send done event with complete summary and concatenated reply
             done_event = {
@@ -478,15 +448,6 @@ def chat(req: ChatRequest) -> dict[str, Any]:
         reflection = result.get("reflection", "")
         actions = list(harness.action_history)
 
-        # Delta sync ONLY when a transaction was actually mutated (created, transferred, deposited, deleted)
-        mutation_tools = {"create_transaction", "create_transfer", "create_deposit", "delete_transaction"}
-        for act in actions:
-            if act.get("tool", "") in mutation_tools:
-                try:
-                    rag_engine.sync_with_firefly()
-                except Exception as sync_err:
-                    logger.warning("Auto sync error: %s", sync_err)
-                break
 
         return {
             "success": True,

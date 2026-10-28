@@ -161,7 +161,7 @@ def create_agent_graph(
             "6. Recurring Bills: List scheduled bills and track upcoming due dates (`list_bills`, `create_bill`).\n"
             "7. Tags: Label transactions for special occasions (#liburan, #reimburse) with `list_tags` and `create_tag`.\n"
             "8. Automation Rules & Recurrences: Inspect automated rules (`list_rules`) and recurring schedules (`list_recurrences`).\n"
-            "9. Dynamic RAG: For past spending habits or fuzzy memory questions ('kapan terakhir beli kopi?'), use `semantic_transaction_search`.\n"
+            "9. Past Spending & Search: For questions about past spending history or specific transactions ('kapan terakhir beli kopi?', 'cari pengeluaran bensin'), use `search_transactions` or `list_transactions` to query real-time records directly.\n"
             "10. Output Formatting Guidelines for Web Display (CRITICAL FOR USER READABILITY):\n"
             "   - Format all output in clean, elegant GitHub Flavored Markdown that renders beautifully on the user's web interface.\n"
             "   - Executive Summary: Always start with 1-2 friendly, conversational opening sentences summarizing the answer directly.\n"
